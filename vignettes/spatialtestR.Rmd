@@ -1,0 +1,394 @@
+---
+title: "Testing a Sentinel-1 SAR preprocessing pipeline with spatialtestR"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Testing a Sentinel-1 SAR preprocessing pipeline with spatialtestR}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  fig.width  = 6,
+  fig.height = 4
+)
+```
+
+## The problem
+
+Imagine you're building a **snow-on-runoff (SOR)** detection pipeline for the Alps from Sentinel-1 SAR data. The raw VH backscatter, in decibels, goes through five preprocessing steps before you can extract the wet-snow signal:
+
+1.  **mask NoData**: convert sensor-encoded `-9999` to proper NA
+2.  **remove bottom-noise**: discard pixels below `-35 dB`
+3.  **speckle filter**: smooth the multiplicative noise typical of SAR
+4.  **aggregate**: go from `10 m` to `20 m` resolution to reduce noise further
+5.  **detect wet snow**: flag pixels whose backscatter drops more than `2 dB` below a winter reference
+
+Each of these steps *should* preserve specific properties of the raster, and each can silently introduce bugs that look fine on a map but are numerically incorrect. This vignette walks through testing each step with `spatialtestR`.
+
+```{r}
+library(spatialtestR)
+library(terra)
+```
+
+## Simplified SAR processing functions
+
+> For this tutorial we use simplified versions to illustrate the test patterns.
+
+```{r}
+mask_nodata <- function(r, nodata = -9999) {
+  v <- terra::values(r)
+  v[v == nodata] <- NA
+  terra::values(r) <- v
+  r
+}
+
+mask_bottom_noise <- function(r, threshold_db = -35) {
+  v <- terra::values(r)
+  v[v < threshold_db] <- NA
+  terra::values(r) <- v
+  r
+}
+
+speckle_filter <- function(r, window = 3) {
+  terra::focal(r,
+               w = matrix(1 / (window * window), window, window),
+               fun = sum, na.rm = TRUE,
+               pad = TRUE, padValue = NA)
+}
+
+aggregate_raster <- function(r, factor = 2, fun = "mean") {
+  terra::aggregate(r, fact = factor, fun = fun, na.rm = TRUE)
+}
+
+detect_wet_snow <- function(r, reference, threshold_db = 2.0) {
+  reference - r > threshold_db
+}
+```
+
+## Step 1: `mask_nodata()`
+
+> convert the sentinel value `-9999` to proper `NA`. This should change only the `NA` pattern of the raster, nothing else.
+
+```{r}
+# Build a synthetic SAR-like raster: 200 NoData cells, 200 valid cells (dB)
+r_in <- create_test_raster(
+  nrow = 20, ncol = 20,
+  crs    = "EPSG:32632",
+  values = c(rep(-9999, 200), rep(-15, 200))
+)
+
+r_out <- mask_nodata(r_in, nodata = -9999)
+```
+
+> we expect the function to preserve geometry and CRS, and to introduce exactly 200 new `NA` values:
+
+```{r}
+# Structure: shape, CRS, layer count
+expect_same_dims(r_in, r_out)
+expect_same_crs(r_in,  r_out)
+
+# Robustness: no Inf values, exactly 200 new NAs
+expect_no_inf(r_out)
+stopifnot(sum(is.na(terra::values(r_out))) == 200L)
+```
+
+> if we wanted to verify exactly what the function did to the values, we could ask `summarize_transformation()` for the regression-based view:
+
+```{r}
+summarize_transformation(r_in, r_out)
+```
+
+You'll see that R² is reported on the valid pixel pairs (excluding the masked NAs) and the slope/intercept identify this as a near-identity transformation **⟶** the function preserves values, it just relocates some of them to `NA`{style="color: rgb(76, 79, 105);"}.
+
+## Step 2: `mask_bottom_noise()`
+
+> below `-35 dB`, SAR returns are dominated by sensor noise rather than ground signal. This function masks those pixels to `NA`.
+
+```{r}
+# Mix of valid pixels (around -15 dB), some below -35 dB, some NA
+set.seed(1)
+r_in <- create_test_raster(
+  nrow = 20, ncol = 20,
+  crs    = "EPSG:32632",
+  values = c(rep(-15,  200),   # valid
+             rep(-40,  100),   # bottom-noise: will be masked
+             rep(NA,   100))   # already NA
+)
+
+r_out <- mask_bottom_noise(r_in, threshold_db = -35)
+```
+
+> after this step we expect:
+>
+> - geometry unchanged
+> - no values below the threshold
+> - valid range now within typical SAR backscatter bounds
+> - no Inf or NaN
+
+```{r}
+expect_same_dims(r_in, r_out)
+expect_same_crs (r_in, r_out)
+
+# After bottom-noise removal, all remaining values must be > -35 dB
+expect_raster_values_between(r_out, lower = -35, upper = 5)
+
+# No infinities introduced
+expect_no_inf(r_out)
+```
+
+> confirming that the function adds `NAs` but leaves values otherwise untouched:
+
+```{r}
+summarize_transformation(r_in, r_out)
+```
+
+> in the output you should see roughly **100 added NAs** (the `-40 dB` pixels) and a linear fit classification of `identity` on the valid pairs.
+
+## Step 3: `speckle_filter()`
+
+> Speckle is the multiplicative noise pattern characteristic of SAR data. A typical filter (here: a simple 3×3 mean) smooths it out. **Crucially**, this is the first step in our pipeline where R² should drop below 1.
+
+```{r}
+# Build a noisy backscatter raster: mean -15 dB, sd 3 dB
+set.seed(42)
+r_in <- create_test_raster(
+  nrow = 30, ncol = 30,
+  crs    = "EPSG:32632",
+  values = rnorm(900, mean = -15, sd = 3)
+)
+
+r_out <- speckle_filter(r_in, window = 3)
+```
+
+> what should be true after the filter:
+>
+> - **geometry preserved** (focal operations don't resize)
+> - **no Inf** introduced
+> - the **mean** stays close to the input mean (the filter is locally averaging, so it should be unbiased over a large enough region)
+
+```{r}
+expect_same_dims(r_in, r_out)
+expect_same_crs (r_in, r_out)
+expect_no_inf(r_out)
+
+# Mean should be preserved within a small tolerance
+expect_mean_preserved(r_in, r_out, tolerance = 0.5)
+```
+
+> `summarize_transformation()` will tell us whether the filter behaves as a "linear-ish" operation = slope close to 1, intercept close to 0, but R² *below* 1 because of the smoothing:
+
+```{r}
+summarize_transformation(r_in, r_out)
+```
+
+**A typical result:** `R² ≈ 0.4–0.6` (lots of smoothing), classification `non_linear` (because we cross below the `linear_threshold = 0.999`). That is *exactly* what you want from a working filter.
+
+> **Reading R² for a filter**: R² close to 1 would mean the filter isn't actually filtering anything. R² close to 0 would mean the output is uncorrelated with the input (bug). Real speckle filters land in between.
+
+## Step 4: `aggregate_raster()`
+
+> now the geometry actually changes: we go from a 30×30 raster to a 15×15 raster by averaging 2×2 blocks. `expect_same_dims()` would (correctly) fail here, so this is the case for **`summarize_transformation()` with the `resampling` argument**.
+
+```{r}
+r_in  <- create_test_raster(nrow = 30, ncol = 30,
+                            crs = "EPSG:32632",
+                            values = rnorm(900, mean = -15, sd = 3),
+                            seed = 7)
+r_out <- aggregate_raster(r_in, factor = 2, fun = "mean")
+```
+
+> we can no longer compare pixel-to-pixel: the rasters have different dimensions.\
+> `summarize_transformation()` switches to **geographic sampling** automatically:
+
+```{r}
+summarize_transformation(r_in, r_out,
+                         resampling = "average",
+                         seed = 1)
+```
+
+> the output includes a *"resampling hint"* section that tells you the expected R² range for the chosen method (here `"average"` → roughly 0.92 - 0.99) and whether your observed value falls within that range.
+
+If we were to assert *no* resampling happened we'd get a hard error:
+
+```{r, error = TRUE}
+summarize_transformation(r_in, r_out, resampling = FALSE)
+```
+
+## Step 5: `detect_wet_snow()`
+
+> comparing the preprocessed raster to a **winter reference** backscatter and flags pixels whose backscatter has dropped more than 2 dB (an established wet-snow indicator). The function returns a boolean raster.
+
+```{r}
+# Build a winter reference (slightly higher backscatter, mean -12 dB)
+ref <- create_test_raster(
+  nrow = 30, ncol = 30,
+  crs    = "EPSG:32632",
+  values = rnorm(900, mean = -12, sd = 2),
+  seed   = 11
+)
+
+# Build a "spring" raster with some genuinely wet pixels
+spring <- create_test_raster(
+  nrow = 30, ncol = 30,
+  crs    = "EPSG:32632",
+  values = c(rnorm(450, mean = -12, sd = 2),   # not wet
+             rnorm(450, mean = -16, sd = 2)),  # wet (below threshold)
+  seed = 12
+)
+
+wet <- detect_wet_snow(spring, reference = ref, threshold_db = 2.0)
+```
+
+> now we test the wet-snow mask:
+
+```{r}
+# Structure: same shape and CRS as the input
+expect_same_dims(spring, wet)
+expect_same_crs (spring, wet)
+
+# A boolean raster: all values must be 0 or 1
+expect_raster_values_between(wet, lower = 0, upper = 1)
+
+# No Inf or NaN values
+expect_no_inf(wet)
+```
+
+> We can verify the relationship between input and output too: A non-trivial wet-snow detection should produce output that is *not* a linear function of input (it's a thresholded comparison, not a smooth transformation):
+
+```{r}
+summarize_transformation(spring, wet)
+```
+
+You should see a classification like `non_linear`: perfectly correct for a thresholded comparison. The diagnostic confirms what you already know structurally: this is a thresholding operation, not a value transformation.
+
+## Error messages
+
+One of the design goals of `spatialtestR` is that when an assertion fails, you get an error that **tells you exactly what went wrong**. Below are the typical failure modes you'll encounter in a SAR pipeline, each shown with the actual error output.
+
+### A function that silently changes dimensions
+
+Imagine `mask_nodata()` accidentally trimmed a row from the raster:
+
+```{r, error = TRUE}
+r_in  <- create_test_raster(nrow = 20, ncol = 20, crs = "EPSG:32632")
+r_bad <- create_test_raster(nrow = 19, ncol = 20, crs = "EPSG:32632")  # one row lost
+
+expect_same_dims(r_in, r_bad)
+```
+
+### A function that silently reprojects
+
+`expect_same_crs()` catches accidental CRS changes:
+
+```{r, error = TRUE}
+r_in  <- create_test_raster(nrow = 10, ncol = 10, crs = "EPSG:32632")
+r_bad <- create_test_raster(nrow = 10, ncol = 10, crs = "EPSG:4326")    # silently reprojected
+
+expect_same_crs(r_in, r_bad)
+```
+
+### Values out of the expected range
+
+If your `mask_bottom_noise()` left a few `-40 dB` pixels behind, this assertion catches it and reports the observed range:
+
+```{r, error = TRUE}
+r_buggy <- create_test_raster(
+  nrow = 10, ncol = 10,
+  values = c(rep(-15, 90), rep(-40, 10))   # 10 pixels below -35 dB
+)
+
+expect_raster_values_between(r_buggy, lower = -35, upper = 5)
+```
+
+### Inf values from a division-by-zero bug
+
+If your speckle filter or normalisation pipeline divides by zero, you'll get `Inf` cells. `expect_no_inf()` reports the counts of `Inf` and `-Inf` separately:
+
+```{r, error = TRUE}
+r_buggy <- create_test_raster(nrow = 10, ncol = 10, values = 1:100)
+v <- terra::values(r_buggy)
+v[c(1, 2, 3)]  <- Inf
+v[c(50)]        <- -Inf
+terra::values(r_buggy) <- v
+
+expect_no_inf(r_buggy)
+```
+
+### Systematic mean shift
+
+A speckle filter should preserve the mean of an extended homogeneous region. If your implementation has a systematic bias, `expect_mean_preserved()` flags it and reports the magnitude of the shift:
+
+```{r, error = TRUE}
+r_in   <- create_test_raster(values = rep(-15, 100))
+r_buggy <- create_test_raster(values = rep(-13, 100))   # +2 dB systematic shift
+
+expect_mean_preserved(r_in, r_buggy, tolerance = 0.5)
+```
+
+### Multiple mismatches in one error
+
+When several properties are wrong at once, `spatialtestR` reports **all of them in a single error message**:
+
+```{r, error = TRUE}
+r_in  <- create_test_raster(nrow = 20, ncol = 20)
+r_bad <- create_test_raster(nrow = 10, ncol =  5)    # both wrong
+
+expect_raster_dims(r_in, nrow = 20, ncol = 20)       # this passes
+expect_raster_dims(r_bad, nrow = 20, ncol = 20)      # this catches both at once
+```
+
+### When you assert no resampling but the geometry differs
+
+Asserting `resampling = FALSE` on rasters with different dimensions raises a clear, descriptive error that prevents silent geometry drift from going unnoticed:
+
+```{r, error = TRUE}
+r_in  <- create_test_raster(nrow = 30, ncol = 30, crs = "EPSG:32632",
+                            values = rnorm(900, mean = -15, sd = 3), seed = 1)
+r_out <- terra::aggregate(r_in, fact = 2, fun = "mean")
+
+summarize_transformation(r_in, r_out, resampling = FALSE)
+```
+
+------------------------------------------------------------------------
+
+## Putting it all together: a single test suite
+
+Below is the full pipeline test:
+
+```{r}
+library(spatialtestR)
+library(terra)
+
+# Synthetic Sentinel-1 fixture
+r_raw <- create_test_raster(
+  nrow = 30, ncol = 30,
+  crs    = "EPSG:32632",
+  values = c(rep(-9999, 200),
+             rnorm(700, mean = -15, sd = 3)),
+  seed = 1
+)
+
+# Run the full pipeline
+r_step1 <- mask_nodata(r_raw)
+r_step2 <- mask_bottom_noise(r_step1, threshold_db = -35)
+r_step3 <- speckle_filter(r_step2, window = 3)
+r_step4 <- aggregate_raster(r_step3, factor = 2, fun = "mean")
+
+# Test all four geometry-preserving steps at once
+for (step in list(r_step1, r_step2, r_step3)) {
+  expect_same_dims(r_raw, step)
+  expect_same_crs (r_raw, step)
+  expect_no_inf(step)
+}
+
+# Test step 4 separately: geometry has changed (15x15 from 30x30)
+expect_raster_dims(r_step4, nrow = 15, ncol = 15)
+expect_same_crs (r_raw, r_step4)
+expect_no_inf(r_step4)
+```
