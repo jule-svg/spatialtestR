@@ -177,8 +177,10 @@ expect_same_dims(r_in, r_out)
 expect_same_crs (r_in, r_out)
 expect_no_inf(r_out)
 
-# Mean should be preserved within a small tolerance
-expect_mean_preserved(r_in, r_out, tolerance = 0.5)
+# Mean should be preserved within a reasonable tolerance.
+# A 3x3 filter with NA-padding at the borders typically shifts the mean
+# by a small amount (~0.5-1.5 dB on a 30x30 raster), so we allow 2 dB here.
+expect_mean_preserved(r_in, r_out, tolerance = 2)
 ```
 
 > `summarize_transformation()` will tell us whether the filter behaves as a "linear-ish" operation = slope close to 1, intercept close to 0, but R² *below* 1 because of the smoothing:

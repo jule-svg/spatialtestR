@@ -6,6 +6,8 @@
 \alias{spatialtestR-package}
 \title{spatialtestR: Testing Helpers for Spatial Raster Functions}
 \description{
+\if{html}{\figure{logo.png}{options: style='float: right' alt='logo' width='120'}}
+
 Provides generator functions for synthetic terra SpatRaster test fixtures, testthat-compatible expect_*() assertions for checking structural properties (dimensions, CRS), value ranges, and robustness (NA consistency, absence of Inf values), and a diagnostic function (summarize_transformation()) that reports geometry, value statistics, and a linear-regression-based classification of how an input raster was transformed into an output raster.
 }
 \author{

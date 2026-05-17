@@ -1,4 +1,4 @@
-# spatialtestR <img src="man/figures/logo.png" alt="spatialtestR logo" align="right" width="200"/>
+# spatialtestR <img src="man/figures/logo.png" alt="spatialtestR logo" align="right" width="140"/>
 
 `testthat` made unit testing in R something people actually do. `spatialtestR` is the same idea for `terra::SpatRaster`. **Did your raster function actually do what you meant?**
 
@@ -15,16 +15,11 @@
 # Installation
 
 ``` r
-# once: installing devtools 
-install.packages("devtools")
+# Development version from GitHub (once published)
+# devtools::install_github("<user>/spatialtestR", build_vignettes = TRUE)
 
-# installing package from github
-devtools::install_github("jule-svg/spatialtestR", build_vignettes = TRUE)
-
-# load and try out
-library(spatialtestR)
-?create_test_raster
-vignette("spatialtestR")
+# Or from a local clone (with vignettes)
+devtools::install_local("path/to/spatialtestR", build_vignettes = TRUE)
 ```
 
 ------------------------------------------------------------------------
