@@ -1,4 +1,4 @@
-# spatialtestR <img src="man/figures/logo.png" alt="spatialtestR logo" align="right" width="140"/>
+# spatialtestR <img src="man/figures/logo.png" alt="spatialtestR logo" align="right" width="200"/>
 
 `testthat` made unit testing in R something people actually do. `spatialtestR` is the same idea for `terra::SpatRaster`. **Did your raster function actually do what you meant?**
 
@@ -15,11 +15,16 @@
 # Installation
 
 ``` r
-# Development version from GitHub (once published)
-# devtools::install_github("<user>/spatialtestR", build_vignettes = TRUE)
+# once installing devtools
+install.packages("devtools")
 
-# Or from a local clone (with vignettes)
-devtools::install_local("path/to/spatialtestR", build_vignettes = TRUE)
+# installing package
+devtools::install_github("DEIN-USERNAME/spatialtestR", build_vignettes = TRUE)
+
+# loading and testing
+library(spatialtestR)
+?create_test_raster        # Hilfeseite öffnet sich
+vignette("spatialtestR")   # Vignette öffnet sich im Browser
 ```
 
 ------------------------------------------------------------------------
@@ -353,7 +358,7 @@ The thresholds for "≈" and "≥" are configurable via `tolerance` (default `1e
 
 | argument | description |
 |----|----|
-| `r_in`, `r_out` | the two rasters to compare: `r_in` is the input; `r_out` is the function's result. |
+| `r_in`, `r_out` | the two rasters to compare: `r_in` is the input; `r_out` is the function's result |
 | `resampling` | what the user knows about resampling: `NULL` (auto-detect from geometry), `FALSE` (assert no resampling, error if geometries differ), `TRUE` (resampling happened, method unspecified), or a method string (see below) |
 | `n_sample` | maximum number of points used when geographic sampling is needed (default 10 000) |
 | `seed` | random seed for reproducible sampling |
