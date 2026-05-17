@@ -15,13 +15,13 @@
 # Installation
 
 ``` r
-# once installing devtools
+# installing devtools
 install.packages("devtools")
 
 # installing package
-devtools::install_github("DEIN-USERNAME/spatialtestR", build_vignettes = TRUE)
+devtools::install_github("jule-svg/spatialtestR", build_vignettes = TRUE)
 
-# loading and testing
+# loading and trying
 library(spatialtestR)
 ?create_test_raster        # Hilfeseite öffnet sich
 vignette("spatialtestR")   # Vignette öffnet sich im Browser
