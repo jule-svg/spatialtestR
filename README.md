@@ -15,7 +15,7 @@
 # Installation
 
 ``` r
-# Development version from GitHub (once published)
+# Development version from GitHub
 # devtools::install_github("<user>/spatialtestR", build_vignettes = TRUE)
 
 # Or from a local clone (with vignettes)
