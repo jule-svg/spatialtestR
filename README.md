@@ -17,7 +17,7 @@
 ``` r
 # installing devtools
 install.packages("devtools")
-library devtools
+library(devtools)
 
 # installing package
 devtools::install_github("jule-svg/spatialtestR", build_vignettes = TRUE)
